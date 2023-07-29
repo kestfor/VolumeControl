@@ -8,6 +8,38 @@ import keyboard
 import sys
 
 
+class Timer:
+    def __init__(self):
+        self._start = None
+        self._end = None
+        self._started = False
+        self._ended = True
+
+    def start(self):
+        if self._ended:
+            self._start = time.time()
+            self._started = True
+            self._ended = False
+
+    def stop(self):
+        if self._started:
+            self._end = time.time()
+            self._ended = True
+            self._started = False
+
+    def clear(self):
+        self._start = None
+        self._end = None
+        self._started = False
+        self._ended = True
+
+    def get_time(self):
+        if self._start is not None and self._end is not None:
+            return self._end - self._start
+        else:
+            return 0
+
+
 devices = AudioUtilities.GetSpeakers()
 interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
 volume = interface.QueryInterface(IAudioEndpointVolume)
@@ -24,12 +56,17 @@ elif len(sys.argv) != 1:
     raise SyntaxError("необязательные аргументы: -w, -h")
 
 
+PAUSE_PLAY_TIME = 0.7
+PREVIOUS_TRACK_TIME = 1
+NEXT_TRACK_TIME = 0.1
 STANDARD_BOX_HEIGHT = 285
 STANDARD_BOX_WIDTH = 280
 STANDARD_BOX_SIZE = (STANDARD_BOX_WIDTH, STANDARD_BOX_HEIGHT)
 STANDARD_MAX_DISTANCE = 230
 STANDARD_MIN_DISTANCE = 25
 STANDARD_FINGER_LEN = 41
+SECOND_GESTURE_MAX_LEN = 110
+
 cap = cv2.VideoCapture(0)
 cap.set(cv2.CAP_PROP_FRAME_WIDTH, WIDTH)
 cap.set(cv2.CAP_PROP_FRAME_HEIGHT, HEIGHT)
@@ -40,12 +77,12 @@ detector = htm.HandDetector(max_num_hands=1, min_detection_confidence=0.9, min_t
 curr_volume = np.interp(volume.GetMasterVolumeLevel(), (MIN_VOLUME, MAX_VOLUME), (0, 100))
 
 try_prev = False
-try_prev_counter = 0
-counter = 0
+try_prev_time = None
 enable_fps = False
 enable_draw = False
 text_type = 0
 timer = 0
+gesture_timer = Timer()
 
 
 def get_text(type_of_text):
@@ -98,43 +135,46 @@ while True:
                 curr_finger_len = detector.find_distance(img, 6, 7)[0]
                 distance, circle = detector.find_distance(img, 8, 12, STANDARD_FINGER_LEN, curr_finger_len, draw=True)
                 cv2.circle(img, circle, 10, detector.white_color, cv2.FILLED)
+
                 if distance <= 60:
-                    counter += 1
+                    gesture_timer.start()
                     cv2.circle(img, circle, 25, detector.green_color, cv2.FILLED)
 
-                if distance > 110:
-                    if try_prev:
-                        try_prev_counter += 1
-                    if try_prev_counter > fps // 2:
+                if distance > SECOND_GESTURE_MAX_LEN:
+                    gesture_timer.stop()
+                    curr_time = time.time()
+                    if try_prev_time is not None and curr_time - try_prev_time > PREVIOUS_TRACK_TIME:
                         cv2.circle(img, circle, 10, detector.green_color, cv2.FILLED)
                         print("Next Track")
                         keyboard.send("next track")
                         timer = 0
                         text_type = 1
-                        try_prev_counter = 0
                         try_prev = False
-                    if counter >= fps // 2:
+                        try_prev_time = None
+                        gesture_timer.clear()
+                    if gesture_timer.get_time() >= PAUSE_PLAY_TIME:
                         cv2.circle(img, circle, 10, detector.green_color, cv2.FILLED)
                         print("Play/Pause")
                         keyboard.send("play/pause")
                         timer = 0
                         text_type = 3
                         try_prev = False
-                        try_prev_counter = 0
-                    elif counter > fps // 8:
+                        try_prev_time = None
+                        gesture_timer.clear()
+                    elif gesture_timer.get_time() > NEXT_TRACK_TIME:
                         if not try_prev:
                             try_prev = True
-                            try_prev_counter = 0
+                            try_prev_time = time.time()
+                            gesture_timer.clear()
                         else:
-                            if try_prev_counter <= fps // 3:
-                                cv2.circle(img, circle, 10, detector.green_color, cv2.FILLED)
-                                print("Previous Track")
-                                keyboard.send("previous track")
-                                timer = 0
-                                text_type = 2
-                                try_prev_counter = 0
-                                try_prev = False
-                    counter = 0
+                            cv2.circle(img, circle, 10, detector.green_color, cv2.FILLED)
+                            print("Previous Track")
+                            keyboard.send("previous track")
+                            timer = 0
+                            text_type = 2
+                            try_prev = False
+                            try_prev_time = None
+                    gesture_timer.clear()
 
     if timer == 0 and text_type > 0:
         timer = time.time() + 1.5
