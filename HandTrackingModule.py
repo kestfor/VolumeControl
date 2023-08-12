@@ -156,6 +156,9 @@ class HandDetector:
                 fingers.append(0)
         return fingers
 
+    def get_coords(self, landmark):
+        return self.__landmarks_list[landmark][1:]
+
     def find_distance(self, img, first_landmark: int, second_landmark: int,
                       standard_size=None, current_size=None, draw=False):
 
@@ -181,6 +184,6 @@ class HandDetector:
             cv2.circle(img, (x1, y1), 10, self.__WHITE, cv2.FILLED)
             cv2.circle(img, (x2, y2), 10, self.__WHITE, cv2.FILLED)
             cv2.line(img, (x1, y1), (x2, y2), self.__WHITE, 3)
-        distance = math.hypot((x2 - x1) * (standard_size[0] / current_size[0]),
-                              (y2 - y1) * (standard_size[1] / current_size[0]))
+        distance = math.hypot(abs(x2 - x1) * (standard_size[0] / current_size[0]),
+                              abs(y2 - y1) * (standard_size[1] / current_size[0]))
         return distance, (cx, cy)

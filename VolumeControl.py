@@ -1,30 +1,34 @@
-import cv2
+import os
+import sys
 import time
+import json
+
+import cv2
+from cv2 import FONT_HERSHEY_SIMPLEX as FONT
+import keyboard
 import numpy as np
 from comtypes import CLSCTX_ALL
 from pycaw.pycaw import AudioUtilities, IAudioEndpointVolume
+
 import HandTrackingModule as htm
-import keyboard
-import sys
-import os
 
 
 class Timer:
     def __init__(self):
-        self._start = None
-        self._end = None
+        self._start_time = None
+        self._end_time = None
         self._started = False
         self._ended = True
 
     def start(self):
         if self._ended:
-            self._start = time.time()
+            self._start_time = time.time()
             self._started = True
             self._ended = False
 
     def stop(self):
         if self._started:
-            self._end = time.time()
+            self._end_time = time.time()
             self._ended = True
             self._started = False
 
@@ -32,11 +36,11 @@ class Timer:
         self.__init__()
 
     def get_time(self):
-        if self._start is not None:
-            if self._end is None:
-                return time.time() - self._start
+        if self._start_time is not None:
+            if self._end_time is None:
+                return time.time() - self._start_time
             else:
-                return self._end - self._start
+                return self._end_time - self._start_time
         else:
             return 0
 
@@ -52,87 +56,117 @@ if len(sys.argv) == 5:
 elif len(sys.argv) != 1:
     raise SyntaxError("необязательные аргументы: -w, -h")
 
-
+CONFIG_FILE_NAME = "config.json"
 SETTING_TIME = 3
 PAUSE_PLAY_TIME = 0.7
-PREVIOUS_TRACK_TIME = 1
+PREVIOUS_TRACK_TIME = 0.7
 NEXT_TRACK_TIME = 0.1
-STANDARD_BOX_HEIGHT = 285
-STANDARD_BOX_WIDTH = 280
+STANDARD_BOX_HEIGHT = 329
+STANDARD_BOX_WIDTH = 346
 STANDARD_BOX_SIZE = [STANDARD_BOX_WIDTH, STANDARD_BOX_HEIGHT]
-STANDARD_MAX_DISTANCE = 230
-STANDARD_MIN_DISTANCE = 25
-STANDARD_FINGER_LEN = 41
-SECOND_GESTURE_MAX_LEN = 110
+FIRST_GESTURE_MAX_LEN = 220
+FIRST_GESTURE_MIN_LEN = 25
+SECOND_GESTURE_MAX_LEN = 79
+STANDARD_REFERENCE_FINGER_LEN = 73
 
+
+setting_mode = False
 set_size_first = False
 set_size_second = False
 
-fingers_len_for_setting = []
+reference_finger_len_for_setting = []
 max_dist_for_setting = []
 box_size_for_setting = []
 max_dist_second_gest_setting = []
 times = set()
 
+error_range = 0.4
+config_dict = {}
 
-def get_config(file_name):
+
+def get_config(reference_ratio: float) -> int:
+    global config_dict
+    if config_dict:
+        global STANDARD_BOX_SIZE
+        global FIRST_GESTURE_MAX_LEN
+        global STANDARD_REFERENCE_FINGER_LEN
+        global SECOND_GESTURE_MAX_LEN
+        min_delta = 100
+        user_id = None
+        for key in config_dict:
+            if reference_ratio - config_dict[key]["REFERENCE_RATIO"] < min_delta:
+                min_delta = reference_ratio - config_dict[key]["REFERENCE_RATIO"]
+                user_id = key
+        STANDARD_BOX_SIZE = config_dict[user_id]["STANDARD_BOX_SIZE"]
+        FIRST_GESTURE_MAX_LEN = config_dict[user_id]["FIRST_GESTURE_MAX_LEN"]
+        STANDARD_REFERENCE_FINGER_LEN = config_dict[user_id]["STANDARD_REFERENCE_FINGER_LEN"]
+        SECOND_GESTURE_MAX_LEN = config_dict[user_id]["SECOND_GESTURE_MAX_LEN"]
+        return user_id
+
+
+def load_config(file_name: str) -> None:
     if os.path.exists(file_name):
         with open(file_name, "r") as file:
-            global STANDARD_BOX_SIZE
-            global STANDARD_MAX_DISTANCE
-            global STANDARD_FINGER_LEN
-            global SECOND_GESTURE_MAX_LEN
-            box_size = file.readline().strip()
-            max_dist = file.readline().strip()
-            finger_len = file.readline().strip()
-            sec_gest_max_len = file.readline().strip()
-            settings = [max_dist, finger_len, sec_gest_max_len]
-            box_size = box_size[box_size.find('=') + 2::]
-            box_size = [int(box_size[0:box_size.find(',')]), int(box_size[box_size.find(',') + 2::])]
-            settings = [int(item[item.find('=') + 2::]) for item in settings]
-            STANDARD_BOX_SIZE = box_size
-            STANDARD_MAX_DISTANCE, STANDARD_FINGER_LEN, SECOND_GESTURE_MAX_LEN = settings
+            global config_dict
+            tmp_dict = dict(json.load(file))
+            for key, value in tmp_dict.items():
+                config_dict[int(key)] = value
 
 
-def update_config(file_name):
-    with open(file_name, "w") as file:
-        global STANDARD_BOX_SIZE
-        global STANDARD_MAX_DISTANCE
-        global STANDARD_FINGER_LEN
-        global SECOND_GESTURE_MAX_LEN
-        settings = f"STANDARD_BOX_SIZE = {STANDARD_BOX_SIZE[0]}, {STANDARD_BOX_SIZE[1]}\n" \
-                   f"STANDARD_MAX_DISTANCE = {STANDARD_MAX_DISTANCE}\n" \
-                   f"STANDARD_FINGER_LEN = {STANDARD_FINGER_LEN}\n" \
-                   f"SECOND_GESTURE_MAX_LEN = {SECOND_GESTURE_MAX_LEN}"
-        file.write(settings)
+def update_config(file_name: str) -> None:
+    new_key = -1
+    min_error = 100
+    for key in config_dict:
+        new_key = max(key, new_key)
+        min_error = min(min_error, config_dict[key]["REFERENCE_RATIO"])
+    new_key += 1
+    if (not config_dict) or min_error < error_range:
+        new_settings = {"STANDARD_BOX_SIZE": STANDARD_BOX_SIZE,
+                        "FIRST_GESTURE_MAX_LEN": FIRST_GESTURE_MAX_LEN,
+                        "STANDARD_REFERENCE_FINGER_LEN": STANDARD_REFERENCE_FINGER_LEN,
+                        "SECOND_GESTURE_MAX_LEN": SECOND_GESTURE_MAX_LEN,
+                        "REFERENCE_RATIO": FIRST_GESTURE_MAX_LEN / STANDARD_REFERENCE_FINGER_LEN}
+        config_dict[new_key] = new_settings
+        with open(file_name, "w") as file:
+            json.dump(config_dict, file, sort_keys=True, indent=4)
+        print("added new user")
 
 
-def set_size_first_gesture(finger_len, dist, hand_box, set_timer):
+def average(items: [list, tuple]) -> float:
+    return sum(items) / len(items)
+
+
+def set_size_first_gesture(img, detector: htm.HandDetector, hand_box: [list, tuple], set_timer: Timer) -> None:
     global times
     curr_time = int(set_timer.get_time())
-    fingers_len_for_setting.append(finger_len)
-    max_dist_for_setting.append(dist)
+    curr_dist = detector.find_distance(img, 4, 8)[0]
+    reference_finger_len = detector.find_distance(img, 1, 2)[0]
+    reference_finger_len_for_setting.append(reference_finger_len)
+    max_dist_for_setting.append(curr_dist)
     box_size_for_setting.append(hand_box)
+
     times.add(SETTING_TIME - curr_time)
+
     if curr_time >= SETTING_TIME:
-        global STANDARD_FINGER_LEN
-        global STANDARD_MAX_DISTANCE
+        global STANDARD_REFERENCE_FINGER_LEN
+        global FIRST_GESTURE_MAX_LEN
         global STANDARD_BOX_SIZE
         global set_size_first
+        global set_size_second
         set_size_first = False
+        set_size_second = True
         set_timer.reset()
         times.clear()
-        STANDARD_FINGER_LEN = int(sum(fingers_len_for_setting) / len(fingers_len_for_setting))
-        STANDARD_MAX_DISTANCE = int(sum(max_dist_for_setting) / len(max_dist_for_setting))
-        STANDARD_BOX_SIZE[0] = int(sum([item[0] for item in box_size_for_setting]) / len(box_size_for_setting))
-        STANDARD_BOX_SIZE[1] = int(sum([item[1] for item in box_size_for_setting]) / len(box_size_for_setting))
-        fingers_len_for_setting.clear()
+        STANDARD_REFERENCE_FINGER_LEN = int(average(reference_finger_len_for_setting))
+        FIRST_GESTURE_MAX_LEN = int(average(max_dist_for_setting))
+        STANDARD_BOX_SIZE[0] = int(average([item[0] for item in box_size_for_setting]))
+        STANDARD_BOX_SIZE[1] = int(average([item[1] for item in box_size_for_setting]))
+        reference_finger_len_for_setting.clear()
         max_dist_for_setting.clear()
         box_size_for_setting.clear()
-        update_config("config.txt")
 
 
-def set_size_second_gesture(dist, set_timer):
+def set_size_second_gesture(dist, set_timer: Timer) -> None:
     global times
     curr_time = int(set_timer.get_time())
     max_dist_second_gest_setting.append(dist)
@@ -143,13 +177,13 @@ def set_size_second_gesture(dist, set_timer):
         set_size_second = False
         set_timer.reset()
         times.clear()
-        SECOND_GESTURE_MAX_LEN = int(sum(max_dist_second_gest_setting) / len(max_dist_second_gest_setting))
+        SECOND_GESTURE_MAX_LEN = int(average(max_dist_second_gest_setting))
         SECOND_GESTURE_MAX_LEN = int(0.9 * SECOND_GESTURE_MAX_LEN)
         max_dist_second_gest_setting.clear()
-        update_config("config.txt")
+        update_config(CONFIG_FILE_NAME)
 
 
-def get_text(type_of_text):
+def get_text(type_of_text: int) -> str:
     if type_of_text == 1:
         return "Next Track"
     if type_of_text == 2:
@@ -159,9 +193,8 @@ def get_text(type_of_text):
 
 
 def start():
-
     devices = AudioUtilities.GetSpeakers()
-    interface = devices.Activate(IAudioEndpointVolume.iid(), CLSCTX_ALL, None)
+    interface = devices.Activate(IAudioEndpointVolume._iid_, CLSCTX_ALL, None)
     volume = interface.QueryInterface(IAudioEndpointVolume)
     min_volume, max_volume, a = volume.GetVolumeRange()
 
@@ -179,9 +212,11 @@ def start():
     timer = 0
     prev_time = 0
 
+    hand_in_frame = False
+
     gesture_timer = Timer()
     setting_timer = Timer()
-    global set_size_first, set_size_second, times
+    global set_size_first, set_size_second, times, setting_mode
 
     while True:
 
@@ -191,42 +226,47 @@ def start():
         detector.set_hands(img, draw=enable_draw)
         landmarks, hand_box = detector.find_position(img, draw=enable_draw)
 
+        if len(landmarks) > 0:
+            if not hand_in_frame:
+                curr_dist = detector.find_distance(img, 4, 8)[0]
+                finger_len = detector.find_distance(img, 1, 2)[0]
+                reference_ratio = curr_dist / finger_len
+                user_id = get_config(reference_ratio)
+                if user_id is not None and not setting_mode:
+                    print(f'user_id: {user_id}')
+                hand_in_frame = True
+        else:
+            hand_in_frame = False
+
         curr_time = time.time()
         fps = 1 / (curr_time - prev_time)
         prev_time = curr_time
 
         if enable_fps:
-            cv2.putText(img, str(int(fps)), (0, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, detector.black_color, 3)
+            cv2.putText(img, str(int(fps)), (0, 30), FONT, 1, detector.black_color, 3)
 
-        if len(landmarks) > 0:
+        if hand_in_frame:
             box_width = abs(hand_box[0] - hand_box[2])
             box_height = abs(hand_box[1] - hand_box[3])
             area = box_height * box_width // 100
             box_size = (box_width, box_height)
-            skip = False
 
             if 0 <= area <= 1700:
                 fingers = detector.fingers_up()
                 if fingers[0]:
                     if set_size_first:
                         setting_timer.start()
-                        curr_finger_len = detector.find_distance(img, 6, 7)[0]
-                        distance = detector.find_distance(img, 4, 8)[0]
-                        set_size_first_gesture(curr_finger_len, distance, box_size, setting_timer)
+                        set_size_first_gesture(img, detector, box_size, setting_timer)
                         if len(times) > 0:
-                            cv2.putText(img, str(min(times)), (0, HEIGHT - 15), cv2.FONT_HERSHEY_SIMPLEX, 1,
-                                        detector.black_color, 6)
-                            skip = True
-                        else:
-                            skip = False
-                    if not skip:
-                        curr_finger_len = detector.find_distance(img, 6, 7)[0]
-                        distance, circle = detector.find_distance(img, 4, 8,
-                                                                  STANDARD_FINGER_LEN, curr_finger_len, draw=True)
+                            cv2.putText(img, str(min(times)), (0, HEIGHT - 15), FONT, 1, detector.black_color, 6)
+                    if not setting_mode:
+                        curr_finger_len = detector.find_distance(img, 1, 2)[0]
+                        distance, circle = detector.find_distance(img, 4, 8, STANDARD_REFERENCE_FINGER_LEN,
+                                                                  curr_finger_len, draw=True)
                         cv2.circle(img, circle, 10, detector.white_color, cv2.FILLED)
                         volume_percentage = np.interp(distance,
-                                                      (STANDARD_MIN_DISTANCE, STANDARD_MAX_DISTANCE), (0, 100))
-                        smoothness = 5
+                                                      (FIRST_GESTURE_MIN_LEN, FIRST_GESTURE_MAX_LEN), (0, 100))
+                        smoothness = 3
                         volume_percentage = smoothness * int((volume_percentage / smoothness))
                         if all(fingers[2:]):
                             volume.SetMasterVolumeLevelScalar(volume_percentage / 100, None)
@@ -239,15 +279,12 @@ def start():
                         dist = detector.find_distance(img, 8, 12)[0]
                         set_size_second_gesture(dist, setting_timer)
                         if len(times) > 0:
-                            cv2.putText(img, str(min(times)), (0, HEIGHT - 15), cv2.FONT_HERSHEY_SIMPLEX, 1,
+                            cv2.putText(img, str(min(times)), (0, HEIGHT - 15), FONT, 1,
                                         detector.black_color, 6)
-                            skip = True
-                        else:
-                            skip = False
-                    if not skip:
-                        curr_finger_len = detector.find_distance(img, 6, 7)[0]
-                        distance, circle = detector.find_distance(img, 8, 12,
-                                                                  STANDARD_FINGER_LEN, curr_finger_len, draw=True)
+                    if not setting_mode:
+                        curr_finger_len = detector.find_distance(img, 1, 2)[0]
+                        distance, circle = detector.find_distance(img, 8, 12, STANDARD_REFERENCE_FINGER_LEN,
+                                                                  curr_finger_len, draw=True)
                         cv2.circle(img, circle, 10, detector.white_color, cv2.FILLED)
 
                         if distance <= 60:
@@ -265,7 +302,6 @@ def start():
                                 text_type = 1
                                 try_prev = False
                                 try_prev_time = None
-                                gesture_timer.reset()
                             if gesture_timer.get_time() >= PAUSE_PLAY_TIME:
                                 cv2.circle(img, circle, 10, detector.green_color, cv2.FILLED)
                                 print("Play/Pause")
@@ -274,12 +310,10 @@ def start():
                                 text_type = 3
                                 try_prev = False
                                 try_prev_time = None
-                                gesture_timer.reset()
                             elif gesture_timer.get_time() > NEXT_TRACK_TIME:
                                 if not try_prev:
                                     try_prev = True
                                     try_prev_time = time.time()
-                                    gesture_timer.reset()
                                 else:
                                     cv2.circle(img, circle, 10, detector.green_color, cv2.FILLED)
                                     print("Previous Track")
@@ -294,8 +328,7 @@ def start():
             timer = time.time() + 1.5
 
         if timer > time.time():
-            cv2.putText(img, get_text(text_type), (0, HEIGHT - 15),
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, detector.black_color, 6)
+            cv2.putText(img, get_text(text_type), (0, HEIGHT - 15), FONT, 1, detector.black_color, 6)
         else:
             timer = 0
             text_type = 0
@@ -314,17 +347,16 @@ def start():
         if action == ord('d'):
             enable_draw = not enable_draw
 
-        if action == ord('1'):
-            if not set_size_second:
+        if action == ord('s'):
+            if setting_mode:
+                set_size_first = False
+            else:
                 set_size_first = True
-
-        if action == ord('2'):
-            if not set_size_first:
-                set_size_second = True
+            setting_mode = not setting_mode
 
 
 def main():
-    get_config("config.txt")
+    load_config(CONFIG_FILE_NAME)
     start()
 
 
